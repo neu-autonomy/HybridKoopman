@@ -62,6 +62,29 @@ def true_path(system, x0, span, dt):
     return None
 
 
+def field_paths(system, raw):
+    """Untracked true paths drawn faintly behind the panel to show the structure of the flow, as raw states."""
+    if system == "DiscreteSpectrumExample":
+        # Exact solutions from states on the edge of the box [-0.5, 0.5]^2 from which the data were sampled.
+        edge = np.linspace(-0.5, 0.5, 11)
+        starts = [(x1, x2) for x1 in edge for x2 in (-0.5, 0.5)] + [(x1, x2) for x1 in (-0.5, 0.5) for x2 in edge[1:-1]]
+        return [true_path(system, np.array(s), (0.0, 12.0), 0.02) for s in starts]
+    if system == "Lorenz":
+        # One long trajectory of the Lorenz system (rho 28, sigma 10, beta 8/3, as in matlab/data/lorenz.m).
+        from scipy.integrate import solve_ivp
+        f = lambda _, x: [10 * (x[1] - x[0]), x[0] * (28 - x[2]) - x[1], x[0] * x[1] - 8 / 3 * x[2]]  # noqa: E731
+        t = np.arange(0, 40, 0.005)
+        return [solve_ivp(f, (0, t[-1]), raw[0, 0], t_eval=t, rtol=1e-9, atol=1e-9).y.T]
+    return []
+
+
+def mask_to(path, lim):
+    """Copy of `path` with the points outside the axis limits set to NaN, so they are not drawn."""
+    path = path.copy()
+    path[~np.all([(path[:, i] >= lo) & (path[:, i] <= hi) for i, (lo, hi) in enumerate(lim)], axis=0)] = np.nan
+    return path
+
+
 def clip_to(path, lim):
     """Longest run of consecutive points of `path` inside the axis limits."""
     inside = np.all([(path[:, i] >= lo) & (path[:, i] <= hi) for i, (lo, hi) in enumerate(lim)], axis=0)
@@ -99,6 +122,7 @@ def load_system(system, modes, checkpoints, data, quantiles, horizon):
     out["guide"] = [norm(p) if p is not None else None for p in
                     (true_path(system, raw[i, 0], GUIDE_SPAN[system], cfg.delta_t) if system in GUIDE_SPAN
                      else None for i in idx)]
+    out["field"] = [norm(p) for p in field_paths(system, raw)]
     out["pred"] = {m: p[idx].numpy() for m, p in out["pred"].items()}        # (n, P, H, dim)
     return out
 
@@ -186,6 +210,8 @@ def main():
             return ax.plot(*([[]] * dim), **kw)[0]
 
         art = []
+        for path in d["field"]:
+            ax.plot(*mask_to(path, lim).T, color=LINE, lw=0.6, alpha=0.7, zorder=1)
         for j in range(n_traj):
             guide = d["guide"][j]
             ax.plot(*(clip_to(guide, lim) if guide is not None else truth[j]).T, color=LINE, lw=1.1)
