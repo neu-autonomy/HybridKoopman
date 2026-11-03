@@ -30,11 +30,12 @@ from hybrid_koopman.data import csv_path, load_trajectories  # noqa: E402
 
 NAMES = {"DiscreteSpectrumExample": "Discrete spectrum", "FluidFlowOnAttractor": "Fluid flow on attractor",
          "Pendulum": "Pendulum", "Lorenz": "Lorenz"}
-# Light theme of the project website. The two default forecast colors pass a
-# color-vision-deficiency check on the background, and the baseline is also dashed.
+# Light theme of the project website. The forecast colors pass a color-vision-deficiency check
+# on the background. The proposed method is drawn widest and on top. The baseline is thinner and dashed.
 BG, BAND, INK, MUTED, LINE = "#f2eef4", "#e8e0ee", "#2a2131", "#5a5163", "#cbbdd6"
-STYLE = {"lusch": dict(color="#c0661f", ls=(0, (3, 2))), "hybrid": dict(color="#71409b", ls="-"),
-         "hybrid_no_pretrain": dict(color="#3d7a8a", ls=(0, (1, 1.5)))}
+STYLE = {"hybrid": dict(color="#8a3fd1", ls="-", lw=3.0, ms=6, z=6),
+         "hybrid_no_pretrain": dict(color="#3b7fa8", ls=(0, (1, 1.5)), lw=1.8, ms=4, z=5),
+         "lusch": dict(color="#1f8a70", ls=(0, (3, 2)), lw=1.6, ms=4, z=4)}
 
 
 def load_system(system, modes, checkpoints, data, quantiles, horizon):
@@ -94,7 +95,7 @@ def main():
     ap.add_argument("--checkpoints", default="checkpoints")
     ap.add_argument("--data", default="data/csv")
     ap.add_argument("--systems", nargs="+", default=list(SYSTEMS))
-    ap.add_argument("--modes", nargs="+", default=["lusch", "hybrid"])
+    ap.add_argument("--modes", nargs="+", default=["hybrid", "lusch"])
     ap.add_argument("--quantiles", nargs="+", type=float, default=[0.1, 0.3, 0.5, 0.7, 0.9])
     ap.add_argument("--horizon", type=int, default=10)
     ap.add_argument("--seconds", type=float, default=12.0)
@@ -118,7 +119,8 @@ def main():
     fig.text(0.5, 0.965, f"{H}-step forecasts from the true state on test trajectories",
              ha="center", va="center", fontsize=13, color=INK)
     handles = [Line2D([], [], color=INK, lw=2, label=f"True trajectory (next {H} steps)")]
-    handles += [Line2D([], [], lw=2, label=f"Forecast, {MODE_LABELS[m]}", **STYLE[m]) for m in a.modes]
+    handles += [Line2D([], [], color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
+                       label=f"Forecast, {MODE_LABELS[m]}") for m in a.modes]
     fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False, fontsize=10,
                bbox_to_anchor=(0.5, 0.0))
 
@@ -145,11 +147,12 @@ def main():
         art = []
         for j in range(n_traj):
             ax.plot(*truth[j].T, color=LINE, lw=1.1)
-            art.append({"future": line(color=INK, lw=2.2, zorder=3),
-                        "now": line(color=INK, marker="o", ms=5.5, ls="none", zorder=5),
-                        "pred": {m: line(lw=2.0, zorder=4, **STYLE[m]) for m in a.modes},
-                        "end": {m: line(marker="o", ms=4, ls="none", color=STYLE[m]["color"], zorder=4)
-                                for m in a.modes}})
+            art.append({"future": line(color=INK, lw=2.0, zorder=3),
+                        "now": line(color=INK, marker="o", ms=5.5, ls="none", zorder=7),
+                        "pred": {m: line(color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
+                                         zorder=STYLE[m]["z"]) for m in a.modes},
+                        "end": {m: line(marker="o", ms=STYLE[m]["ms"], ls="none", color=STYLE[m]["color"],
+                                        zorder=STYLE[m]["z"]) for m in a.modes}})
         # Current time c is the index of the last true state given to the models.
         c_min, c_max = max(d["memory"].values()) - 1, T - H - 1
         panels.append((ax, three, d, art, c_min, c_max))
