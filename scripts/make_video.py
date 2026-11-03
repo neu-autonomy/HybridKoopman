@@ -209,20 +209,29 @@ def main():
         if three:
             artist.set_3d_properties(pts[:, 2])
 
+    def lerp(seq, i, w):
+        """Point a fraction w of the way from seq[i] to seq[i + 1]."""
+        return seq[i] if w == 0 else (1 - w) * seq[i] + w * seq[i + 1]
+
     def draw(frac):
         for ax, three, d, art, c_min, c_max in panels:
-            c = c_min + int(round(frac * (c_max - c_min)))
+            # The current time moves continuously. Between two samples, every drawn state is interpolated
+            # linearly, so that systems with few samples per trajectory move as smoothly as the others.
+            t = c_min + frac * (c_max - c_min)
+            c = min(int(t), c_max)
+            w = t - c
             for j, aj in enumerate(art):
                 truth = d["truth"][j]
-                set_line(aj["future"], truth[:c + H + 1], three)
-                set_line(aj["now"], truth[c], three)
+                now = lerp(truth, c, w)
+                set_line(aj["future"], np.vstack([truth[:c + H + 1], lerp(truth, c + H, w)]), three)
+                set_line(aj["now"], now, three)
                 for m in aj["pred"]:
                     # A model with memory k predicts from the true states c-k+1..c: row c-k+1 of the forecast.
                     r = c - d["memory"][m] + 1
-                    p = d["pred"][m][j, r]
+                    p = lerp(d["pred"][m][j], r, w)
                     # Earlier predictions at the full horizon, ending at the current one.
-                    set_line(aj["trail"][m], d["pred"][m][j, :r + 1, -1], three)
-                    set_line(aj["pred"][m], np.vstack([truth[c], p]), three)
+                    set_line(aj["trail"][m], np.vstack([d["pred"][m][j, :r + 1, -1], p[-1]]), three)
+                    set_line(aj["pred"][m], np.vstack([now, p]), three)
                     set_line(aj["end"][m], p[-1], three)
             if three:
                 ax.view_init(elev=22, azim=-60 + 40 * frac)
