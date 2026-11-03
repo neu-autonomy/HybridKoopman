@@ -4,8 +4,9 @@
 
 Each panel shows several test trajectories of one system. At each frame the current
 time moves forward along the trajectories. From the true state(s) at that time,
-each model predicts the next `--horizon` states, which are drawn beside the true
-continuation. Each panel states the mean squared error at that horizon over the
+each model predicts the next `--horizon` states (default 3). Each model also leaves a trail
+of its earlier predictions at that horizon, drawn beside the true trajectory, as in the
+figures of the paper. Each panel states the mean squared error at that horizon over the
 whole test split. Coordinates are normalized to [-1, 1] per state component.
 
 The trajectories are chosen by a fixed rule, not by hand: the test trajectories are
@@ -136,7 +137,7 @@ def main():
     ap.add_argument("--systems", nargs="+", default=list(SYSTEMS))
     ap.add_argument("--modes", nargs="+", default=["hybrid", "lusch"])
     ap.add_argument("--quantiles", nargs="+", type=float, default=[0.1, 0.3, 0.5, 0.7, 0.9])
-    ap.add_argument("--horizon", type=int, default=10)
+    ap.add_argument("--horizon", type=int, default=3)
     ap.add_argument("--seconds", type=float, default=12.0)
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--width", type=int, default=1280)
@@ -155,11 +156,12 @@ def main():
     fig = plt.figure(figsize=(a.width / dpi, a.height / dpi), dpi=dpi, facecolor=BG)
     cols = 2 if len(systems) > 1 else 1
     rows = int(np.ceil(len(systems) / cols))
-    fig.text(0.5, 0.965, f"{H}-step forecasts from the true state on test trajectories",
+    kind = "One-step predictions" if H == 1 else f"{H}-step predictions"
+    fig.text(0.5, 0.965, f"{kind} from the true state on test trajectories",
              ha="center", va="center", fontsize=13, color=INK)
-    handles = [Line2D([], [], color=INK, lw=2, label=f"True trajectory (next {H} steps)")]
+    handles = [Line2D([], [], color=INK, lw=2, label="True trajectory")]
     handles += [Line2D([], [], color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
-                       label=f"Forecast, {MODE_LABELS[m]}") for m in a.modes]
+                       label=f"{kind}, {MODE_LABELS[m]}") for m in a.modes]
     fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False, fontsize=10,
                bbox_to_anchor=(0.5, 0.0))
 
@@ -174,7 +176,7 @@ def main():
         lim = [(min(-1.08, lo - 0.03), max(1.08, hi + 0.03)) for lo, hi in zip(pts.min(0), pts.max(0))]
         style_axes(ax, three, lim)
         ax.set_title(NAMES.get(s, s), fontsize=12, color=INK, pad=4)
-        mse_txt = f"Test MSE at step {H}:   " + "    ".join(
+        mse_txt = (f"Test MSE, {H} step" + ("s" if H > 1 else "") + ":   ") + "    ".join(
             f"{MODE_LABELS[m]} {d['mse'][m]:.1e}" for m in a.modes)
         place = ax.text2D if three else ax.text
         place(0.5, -0.02 if three else -0.1, mse_txt, transform=ax.transAxes, ha="center", va="top",
@@ -187,8 +189,11 @@ def main():
         for j in range(n_traj):
             guide = d["guide"][j]
             ax.plot(*(clip_to(guide, lim) if guide is not None else truth[j]).T, color=LINE, lw=1.1)
-            art.append({"future": line(color=INK, lw=2.0, zorder=3),
-                        "now": line(color=INK, marker="o", ms=5.5, ls="none", zorder=7),
+            # The true path is drawn thin and on top, so that each trail shows how far it departs from it.
+            art.append({"future": line(color=INK, lw=1.3, zorder=8),
+                        "trail": {m: line(color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
+                                          zorder=STYLE[m]["z"]) for m in a.modes},
+                        "now": line(color=INK, marker="o", ms=5.5, ls="none", zorder=9),
                         "pred": {m: line(color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
                                          zorder=STYLE[m]["z"]) for m in a.modes},
                         "end": {m: line(marker="o", ms=STYLE[m]["ms"], ls="none", color=STYLE[m]["color"],
@@ -209,11 +214,14 @@ def main():
             c = c_min + int(round(frac * (c_max - c_min)))
             for j, aj in enumerate(art):
                 truth = d["truth"][j]
-                set_line(aj["future"], truth[c:c + H + 1], three)
+                set_line(aj["future"], truth[:c + H + 1], three)
                 set_line(aj["now"], truth[c], three)
                 for m in aj["pred"]:
                     # A model with memory k predicts from the true states c-k+1..c: row c-k+1 of the forecast.
-                    p = d["pred"][m][j, c - d["memory"][m] + 1]
+                    r = c - d["memory"][m] + 1
+                    p = d["pred"][m][j, r]
+                    # Earlier predictions at the full horizon, ending at the current one.
+                    set_line(aj["trail"][m], d["pred"][m][j, :r + 1, -1], three)
                     set_line(aj["pred"][m], np.vstack([truth[c], p]), three)
                     set_line(aj["end"][m], p[-1], three)
             if three:

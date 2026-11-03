@@ -8,7 +8,7 @@ operator and the dimension of its lifted space. A deep Koopman network in the st
 Kutz and Brunton (2018) is then built with that dimension and eigenvalue structure. Its
 auxiliary networks are pretrained on the SDP eigenvalues before the full network is trained.
 
-<p align="center"><img src="docs/forecasts.png" width="800" alt="10-step forecasts of both models on five test trajectories of each of the four systems"></p>
+<p align="center"><img src="docs/forecasts.png" width="800" alt="3-step predictions of both models on five test trajectories of each of the four systems"></p>
 
 ## Contents
 
