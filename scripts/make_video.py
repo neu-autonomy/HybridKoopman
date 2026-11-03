@@ -38,6 +38,41 @@ STYLE = {"hybrid": dict(color="#8a3fd1", ls="-", lw=3.0, ms=6, z=6),
          "lusch": dict(color="#1f8a70", ls=(0, (3, 2)), lw=1.6, ms=4, z=4)}
 
 
+# Time span (before the first sample, after it) of the background path drawn for the two slow systems.
+# The 1 s of data per trajectory covers only a short arc of their state space, so the path is extended
+# with the equations used to generate the data (matlab/data/). The forecasts use only the data.
+GUIDE_SPAN = {"DiscreteSpectrumExample": (1.0, 6.0), "Pendulum": (3.0, 3.0)}
+
+
+def true_path(system, x0, span, dt):
+    """True trajectory through the raw state x0 over times -span[0]..span[1], or None for other systems."""
+    t = np.arange(-round(span[0] / dt), round(span[1] / dt) + 1) * dt
+    if system == "DiscreteSpectrumExample":
+        mu, lam = -0.05, -1.0                     # exact solution, as in DiscreteSpectrumExampleFn.m
+        x1, x2 = x0
+        c3 = -lam * x1 ** 2 / (2 * mu - lam)
+        return np.stack([x1 * np.exp(mu * t), (x2 - c3) * np.exp(lam * t) + c3 * np.exp(2 * mu * t)], axis=1)
+    if system == "Pendulum":
+        from scipy.integrate import solve_ivp
+        f = lambda _, x: [x[1], -np.sin(x[0])]  # noqa: E731
+        back = solve_ivp(f, (0, t[0]), x0, t_eval=t[t <= 0][::-1], rtol=1e-10, atol=1e-12).y.T[::-1]
+        fwd = solve_ivp(f, (0, t[-1]), x0, t_eval=t[t >= 0], rtol=1e-10, atol=1e-12).y.T
+        return np.vstack([back[:-1], fwd])
+    return None
+
+
+def clip_to(path, lim):
+    """Longest run of consecutive points of `path` inside the axis limits."""
+    inside = np.all([(path[:, i] >= lo) & (path[:, i] <= hi) for i, (lo, hi) in enumerate(lim)], axis=0)
+    best, start = (0, 0), None
+    for i, ok in enumerate(np.append(inside, False)):
+        if ok and start is None:
+            start = i
+        elif not ok and start is not None:
+            best, start = max(best, (start, i), key=lambda r: r[1] - r[0]), None
+    return path[best[0]:best[1]]
+
+
 def load_system(system, modes, checkpoints, data, quantiles, horizon):
     """Forecasts of each model on the selected test trajectories, and the test MSE at the last step."""
     cfg = get_config(system)
@@ -59,6 +94,10 @@ def load_system(system, modes, checkpoints, data, quantiles, horizon):
     idx = [int(order[min(int(q * len(order)), len(order) - 1)]) for q in quantiles]
     out["index"] = idx
     out["truth"] = x[idx].double().numpy()                                    # (n, T, dim)
+    norm = Normalizer.from_dict(meta["normalizer"])
+    out["guide"] = [norm(p) if p is not None else None for p in
+                    (true_path(system, raw[i, 0], GUIDE_SPAN[system], cfg.delta_t) if system in GUIDE_SPAN
+                     else None for i in idx)]
     out["pred"] = {m: p[idx].numpy() for m, p in out["pred"].items()}        # (n, P, H, dim)
     return out
 
@@ -146,7 +185,8 @@ def main():
 
         art = []
         for j in range(n_traj):
-            ax.plot(*truth[j].T, color=LINE, lw=1.1)
+            guide = d["guide"][j]
+            ax.plot(*(clip_to(guide, lim) if guide is not None else truth[j]).T, color=LINE, lw=1.1)
             art.append({"future": line(color=INK, lw=2.0, zorder=3),
                         "now": line(color=INK, marker="o", ms=5.5, ls="none", zorder=7),
                         "pred": {m: line(color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
