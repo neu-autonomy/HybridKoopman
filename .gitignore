@@ -1,0 +1,12 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+# Trajectory data (about 136 MB). Download from the release page or regenerate with matlab/data.
+data/csv/
+# Training outputs
+runs/
+wandb/
+*.pth
+# Rendered videos and images
+*.mp4
+/koopman.png

@@ -1,0 +1,10 @@
+torch>=2.0
+numpy
+scipy
+pandas
+matplotlib
+# scripts/make_video.py
+imageio
+imageio-ffmpeg
+# tests
+pytest
