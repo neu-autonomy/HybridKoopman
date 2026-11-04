@@ -246,7 +246,7 @@ def get_omegas_from_auxillary(model, params, encoded_data):
 
 def load_koopman(path=None, use_log=False):
     if path is None:
-        path = '/home/spirolife/KoopmanGrowth/DeepKoopman-master/sznaier/koopman_out.mat' #TODO Get rid of this
+        path = '../../sznaier/koopman_out.mat' #TODO Get rid of this
     data = loadmat(path)
     Koop = data['koop']
     # print(Koop.shape)
