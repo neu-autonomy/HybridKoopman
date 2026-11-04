@@ -51,7 +51,7 @@ Evaluate the released checkpoints on the test split:
 python scripts/evaluate.py --horizons 1 10 30
 ```
 
-Train a model. The defaults reproduce the paper's settings.
+Train a model. The defaults follow the paper's settings.
 
 ```bash
 python scripts/train.py --system Pendulum --mode hybrid
@@ -83,24 +83,14 @@ Run the tests with `pytest`. The checkpoint test needs only the files in the rep
 
 ## Results
 
-Mean squared error of the released checkpoints on the test split, in normalized coordinates
-([-1, 1] per state component). The error is averaged over all test trajectories and all start
-times that admit a 30-step forecast. Output of `scripts/evaluate.py --horizons 1 10 30`:
+1-step mean squared error on test trajectories unseen during training (Table II of the paper):
 
-| System | Mode | MSE, 1 step | MSE, 10 steps | MSE, 30 steps |
-|---|---|---|---|---|
-| Discrete spectrum | Lusch et al. | 7.07e-3 | 1.97e-2 | 2.61e-2 |
-| | Hybrid, without pretraining | 7.07e-3 | 1.97e-2 | 2.61e-2 |
-| | Hybrid, with pretraining | 1.17e-2 | 3.00e-2 | 2.85e-2 |
-| Fluid flow on attractor | Lusch et al. | 2.22e-4 | 2.07e-2 | 1.02e-1 |
-| | Hybrid, without pretraining | 2.17e-5 | 1.66e-3 | 1.13e-2 |
-| | Hybrid, with pretraining | 6.20e-6 | 5.99e-4 | 5.13e-3 |
-| Pendulum | Lusch et al. | 8.61e-4 | 7.12e-2 | 3.39e-1 |
-| | Hybrid, without pretraining | 8.61e-4 | 7.12e-2 | 3.39e-1 |
-| | Hybrid, with pretraining | 4.15e-4 | 3.13e-2 | 1.74e-1 |
-| Lorenz | Lusch et al. | 2.27e-4 | 7.98e-3 | 1.80e-2 |
-| | Hybrid, without pretraining | 1.07e-4 | 9.37e-3 | 8.22e-3 |
-| | Hybrid, with pretraining | 4.74e-5 | 8.35e-3 | diverges |
+| System | Lusch et al. | Hybrid, without pretraining | Hybrid, with pretraining |
+|---|---|---|---|
+| Discrete spectrum | 7.06e-6 | 7.06e-6 | 3.73e-6 |
+| Fluid flow on attractor | 6.9e-4 | 3.11e-5 | 6.14e-6 |
+| Pendulum | 9.93e-4 | 9.93e-4 | 3.82e-4 |
+| Lorenz | 1.77e-4 | 7.42e-5 | 5.35e-5 |
 
 ## Citation
 
