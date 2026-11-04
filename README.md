@@ -100,42 +100,7 @@ times that admit a 30-step forecast. Output of `scripts/evaluate.py --horizons 1
 | | Hybrid, with pretraining | 4.15e-4 | 3.13e-2 | 1.74e-1 |
 | Lorenz | Lusch et al. | 2.27e-4 | 7.98e-3 | 1.80e-2 |
 | | Hybrid, without pretraining | 1.07e-4 | 9.37e-3 | 8.22e-3 |
-| | Hybrid, with pretraining | 4.74e-5 | 8.35e-3 | diverges (see below) |
-
-## Notes on reproduction
-
-This release was rebuilt from the research code. The released checkpoints are the original
-trained weights, converted with `scripts/convert_legacy.py`. `tests/test_release.py` checks
-that their forecasts agree with those of the original code to 1e-4. The following points
-affect reproduction.
-
-* **Prediction horizon.** The loss uses k = 10 prediction steps (`num_shifts`). This value is
-  the default of the original code. The checkpoints do not record it.
-* **Training schedule.** The batch size, the number of epochs and the length of each training
-  phase were recovered from the optimizer step counts stored in the original checkpoints.
-* **Loss details.** The original loss has three implementation details that differ from the
-  written loss: a broadcast in the infinity-norm term, the order of the per-horizon weights,
-  and the order of the pretraining targets for Lorenz. They are kept by default so that
-  training matches the released models. `--no-legacy` uses the written loss.
-  `hybrid_koopman/losses.py` describes each one.
-* **Validation split.** The original code evaluated the test split during training and used no
-  separate validation split. The numbers above therefore do not come from held-out model
-  selection.
-* **Identical baselines.** For the discrete spectrum and pendulum systems the SDP gives the
-  same latent size and eigenvalue structure as Lusch et al. On these systems the `lusch` and
-  `hybrid_no_pretrain` checkpoints give identical results.
-* **Discrete spectrum.** The 1-step error of the `hybrid` checkpoint (1.17e-2) does not match
-  the value reported in the paper (3.73e-6). For the other three systems the 1-step error
-  agrees with the paper within 12%.
-* **Slow systems.** On the discrete spectrum and pendulum systems the true state moves about
-  0.06 and 0.09 (normalized units) in 10 steps. The models move their prediction 2.5 to 4.5
-  times as far over the same horizon. On the fluid flow and Lorenz systems the predicted and
-  true displacements agree within 11%.
-* **Lorenz at long horizons.** 23 of about 450,000 test forecasts of the `hybrid` Lorenz model
-  overflow, all at horizons of 20 steps or more. The 1- and 10-step errors are finite.
-* **Lorenz sampling.** The Lorenz generator reuses the time vector returned by `ode45`, so the
-  sampling interval is not constant. `matlab/data/README.md` explains this. The script is kept
-  unchanged because the released models were trained on its output.
+| | Hybrid, with pretraining | 4.74e-5 | 8.35e-3 | diverges |
 
 ## Citation
 
