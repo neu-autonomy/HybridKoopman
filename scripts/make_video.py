@@ -1,0 +1,283 @@
+"""Render a video of short-horizon forecasts on test trajectories of each system.
+
+    python scripts/make_video.py --out koopman.mp4 --poster koopman.png
+
+Each panel shows several test trajectories of one system. At each frame the current
+time moves forward along the trajectories. From the true state(s) at that time,
+each model predicts the next `--horizon` states (default 3). Each model also leaves a trail
+of its earlier predictions at that horizon, drawn beside the true trajectory, as in the
+figures of the paper. Each panel states the mean squared error at that horizon over the
+whole test split. Coordinates are normalized to [-1, 1] per state component.
+
+The trajectories are chosen by a fixed rule, not by hand: the test trajectories are
+ranked by forecast error (mean over start times, horizons and the models shown), and
+the trajectories at the quantiles given by `--quantiles` are drawn.
+"""
+
+import argparse
+import os
+import sys
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from hybrid_koopman import MODE_LABELS, SYSTEMS, HybridKoopman, Normalizer, forecast, get_config  # noqa: E402
+from hybrid_koopman.data import csv_path, load_trajectories  # noqa: E402
+
+NAMES = {"DiscreteSpectrumExample": "Discrete spectrum", "FluidFlowOnAttractor": "Fluid flow on attractor",
+         "Pendulum": "Pendulum", "Lorenz": "Lorenz"}
+# Light theme of the project website. The forecast colors pass a color-vision-deficiency check
+# on the background. The proposed method is drawn widest and on top. The baseline is thinner and dashed.
+BG, BAND, INK, MUTED, LINE = "#f2eef4", "#e8e0ee", "#2a2131", "#5a5163", "#cbbdd6"
+STYLE = {"hybrid": dict(color="#8a3fd1", ls="-", lw=3.0, ms=6, z=6),
+         "hybrid_no_pretrain": dict(color="#3b7fa8", ls=(0, (1, 1.5)), lw=1.8, ms=4, z=5),
+         "lusch": dict(color="#1f8a70", ls=(0, (3, 2)), lw=1.6, ms=4, z=4)}
+
+
+# Time span (before the first sample, after it) of the background path drawn for the two slow systems.
+# The 1 s of data per trajectory covers only a short arc of their state space, so the path is extended
+# with the equations used to generate the data (matlab/data/). The forecasts use only the data.
+GUIDE_SPAN = {"DiscreteSpectrumExample": (1.0, 6.0), "Pendulum": (3.0, 3.0)}
+
+
+def true_path(system, x0, span, dt):
+    """True trajectory through the raw state x0 over times -span[0]..span[1], or None for other systems."""
+    t = np.arange(-round(span[0] / dt), round(span[1] / dt) + 1) * dt
+    if system == "DiscreteSpectrumExample":
+        mu, lam = -0.05, -1.0                     # exact solution, as in DiscreteSpectrumExampleFn.m
+        x1, x2 = x0
+        c3 = -lam * x1 ** 2 / (2 * mu - lam)
+        return np.stack([x1 * np.exp(mu * t), (x2 - c3) * np.exp(lam * t) + c3 * np.exp(2 * mu * t)], axis=1)
+    if system == "Pendulum":
+        from scipy.integrate import solve_ivp
+        f = lambda _, x: [x[1], -np.sin(x[0])]  # noqa: E731
+        back = solve_ivp(f, (0, t[0]), x0, t_eval=t[t <= 0][::-1], rtol=1e-10, atol=1e-12).y.T[::-1]
+        fwd = solve_ivp(f, (0, t[-1]), x0, t_eval=t[t >= 0], rtol=1e-10, atol=1e-12).y.T
+        return np.vstack([back[:-1], fwd])
+    return None
+
+
+def field_paths(system, raw):
+    """Untracked true paths drawn faintly behind the panel to show the structure of the flow, as raw states."""
+    if system == "DiscreteSpectrumExample":
+        # Exact solutions from states on the edge of the box [-0.5, 0.5]^2 from which the data were sampled.
+        edge = np.linspace(-0.5, 0.5, 11)
+        starts = [(x1, x2) for x1 in edge for x2 in (-0.5, 0.5)] + [(x1, x2) for x1 in (-0.5, 0.5) for x2 in edge[1:-1]]
+        return [true_path(system, np.array(s), (0.0, 12.0), 0.02) for s in starts]
+    if system == "Lorenz":
+        # One long trajectory of the Lorenz system (rho 28, sigma 10, beta 8/3, as in matlab/data/lorenz.m).
+        from scipy.integrate import solve_ivp
+        f = lambda _, x: [10 * (x[1] - x[0]), x[0] * (28 - x[2]) - x[1], x[0] * x[1] - 8 / 3 * x[2]]  # noqa: E731
+        t = np.arange(0, 40, 0.005)
+        return [solve_ivp(f, (0, t[-1]), raw[0, 0], t_eval=t, rtol=1e-9, atol=1e-9).y.T]
+    return []
+
+
+def mask_to(path, lim):
+    """Copy of `path` with the points outside the axis limits set to NaN, so they are not drawn."""
+    path = path.copy()
+    path[~np.all([(path[:, i] >= lo) & (path[:, i] <= hi) for i, (lo, hi) in enumerate(lim)], axis=0)] = np.nan
+    return path
+
+
+def clip_to(path, lim):
+    """Longest run of consecutive points of `path` inside the axis limits."""
+    inside = np.all([(path[:, i] >= lo) & (path[:, i] <= hi) for i, (lo, hi) in enumerate(lim)], axis=0)
+    best, start = (0, 0), None
+    for i, ok in enumerate(np.append(inside, False)):
+        if ok and start is None:
+            start = i
+        elif not ok and start is not None:
+            best, start = max(best, (start, i), key=lambda r: r[1] - r[0]), None
+    return path[best[0]:best[1]]
+
+
+def load_system(system, modes, checkpoints, data, quantiles, horizon):
+    """Forecasts of each model on the selected test trajectories, and the test MSE at the last step."""
+    cfg = get_config(system)
+    raw = load_trajectories(csv_path(data, system, "test"), cfg.len_time)
+    out = {"pred": {}, "mse": {}, "memory": {}}
+    per_traj = []
+    for mode in modes:
+        model, meta = HybridKoopman.load(os.path.join(checkpoints, f"{system}_{mode}.pt"))
+        x = torch.as_tensor(Normalizer.from_dict(meta["normalizer"])(raw), dtype=torch.float32)
+        pred = forecast(model, x, horizon)                                    # (N, P, H, dim)
+        P, mem = pred.shape[1], model.memory
+        truth = torch.stack([x[:, mem + h:mem + h + P] for h in range(horizon)], dim=2)
+        err = (pred - truth) ** 2
+        out["mse"][mode] = err[:, :, -1].mean().item()
+        per_traj.append(err.mean(dim=(1, 2, 3)))
+        out["pred"][mode] = pred
+        out["memory"][mode] = mem
+    order = torch.argsort(torch.stack(per_traj).mean(0)).numpy()
+    idx = [int(order[min(int(q * len(order)), len(order) - 1)]) for q in quantiles]
+    out["index"] = idx
+    out["truth"] = x[idx].double().numpy()                                    # (n, T, dim)
+    norm = Normalizer.from_dict(meta["normalizer"])
+    out["guide"] = [norm(p) if p is not None else None for p in
+                    (true_path(system, raw[i, 0], GUIDE_SPAN[system], cfg.delta_t) if system in GUIDE_SPAN
+                     else None for i in idx)]
+    out["field"] = [norm(p) for p in field_paths(system, raw)]
+    out["pred"] = {m: p[idx].numpy() for m, p in out["pred"].items()}        # (n, P, H, dim)
+    return out
+
+
+def style_axes(ax, three, lim):
+    ax.set_facecolor(BG)
+    if three:
+        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+            axis.set_pane_color(matplotlib.colors.to_rgba(BAND))
+            axis._axinfo["grid"]["color"] = LINE
+            axis._axinfo["grid"]["linewidth"] = 0.6
+            axis._axinfo["tick"]["inward_factor"] = 0
+            axis._axinfo["tick"]["outward_factor"] = 0
+            axis.set_ticklabels([])
+        ax.set_box_aspect((1, 1, 0.9), zoom=1.2)
+        ax.set_xlim(*lim[0]); ax.set_ylim(*lim[1]); ax.set_zlim(*lim[2])
+        ax.set_xlabel("$x_1$", labelpad=-12); ax.set_ylabel("$x_2$", labelpad=-12)
+        ax.set_zlabel("$x_3$", labelpad=-12)
+    else:
+        ax.set_xlim(*lim[0]); ax.set_ylim(*lim[1])
+        ax.set_xticks([-1, 0, 1]); ax.set_yticks([-1, 0, 1])
+        ax.set_xticklabels([]); ax.set_yticklabels([])
+        ax.tick_params(length=0)
+        ax.grid(color=BAND, lw=1)
+        ax.set_xlabel("$x_1$", labelpad=2); ax.set_ylabel("$x_2$", labelpad=2)
+        for sp in ax.spines.values():
+            sp.set_color(LINE)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="koopman.mp4")
+    ap.add_argument("--poster", help="also save one frame as an image")
+    ap.add_argument("--checkpoints", default="checkpoints")
+    ap.add_argument("--data", default="data/csv")
+    ap.add_argument("--systems", nargs="+", default=list(SYSTEMS))
+    ap.add_argument("--modes", nargs="+", default=["hybrid", "lusch"])
+    ap.add_argument("--quantiles", nargs="+", type=float, default=[0.1, 0.3, 0.5, 0.7, 0.9])
+    ap.add_argument("--horizon", type=int, default=3)
+    ap.add_argument("--seconds", type=float, default=12.0)
+    ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--width", type=int, default=1280)
+    ap.add_argument("--height", type=int, default=720)
+    a = ap.parse_args()
+
+    H = a.horizon
+    systems = {s: load_system(s, a.modes, a.checkpoints, a.data, a.quantiles, H) for s in a.systems}
+    for s, d in systems.items():
+        print(f"{s}: test trajectories {d['index']}, "
+              + ", ".join(f"{m} MSE at step {H} {v:.2e}" for m, v in d["mse"].items()))
+
+    plt.rcParams.update({"font.size": 10, "text.color": INK, "axes.labelcolor": MUTED,
+                         "xtick.color": MUTED, "ytick.color": MUTED, "axes.edgecolor": LINE})
+    dpi = 100
+    fig = plt.figure(figsize=(a.width / dpi, a.height / dpi), dpi=dpi, facecolor=BG)
+    cols = 2 if len(systems) > 1 else 1
+    rows = int(np.ceil(len(systems) / cols))
+    kind = "One-step predictions" if H == 1 else f"{H}-step predictions"
+    fig.text(0.5, 0.965, f"{kind} from the true state on test trajectories",
+             ha="center", va="center", fontsize=13, color=INK)
+    handles = [Line2D([], [], color=INK, lw=2, label="True trajectory")]
+    handles += [Line2D([], [], color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
+                       label=f"{kind}, {MODE_LABELS[m]}") for m in a.modes]
+    fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False, fontsize=10,
+               bbox_to_anchor=(0.5, 0.0))
+
+    panels = []
+    for i, (s, d) in enumerate(systems.items()):
+        truth = d["truth"]
+        n_traj, T, dim = truth.shape
+        three = dim == 3
+        ax = fig.add_subplot(rows, cols, i + 1, projection="3d" if three else None)
+        # The data fill [-1, 1]. Limits also cover every forecast drawn, so nothing leaves the axes.
+        pts = np.vstack([truth.reshape(-1, dim)] + [p.reshape(-1, dim) for p in d["pred"].values()])
+        lim = [(min(-1.08, lo - 0.03), max(1.08, hi + 0.03)) for lo, hi in zip(pts.min(0), pts.max(0))]
+        style_axes(ax, three, lim)
+        ax.set_title(NAMES.get(s, s), fontsize=12, color=INK, pad=4)
+        mse_txt = (f"Test MSE, {H} step" + ("s" if H > 1 else "") + ":   ") + "    ".join(
+            f"{MODE_LABELS[m]} {d['mse'][m]:.1e}" for m in a.modes)
+        place = ax.text2D if three else ax.text
+        place(0.5, -0.02 if three else -0.1, mse_txt, transform=ax.transAxes, ha="center", va="top",
+              fontsize=9, color=MUTED)
+
+        def line(**kw):
+            return ax.plot(*([[]] * dim), **kw)[0]
+
+        art = []
+        for path in d["field"]:
+            ax.plot(*mask_to(path, lim).T, color=LINE, lw=0.6, alpha=0.7, zorder=1)
+        for j in range(n_traj):
+            guide = d["guide"][j]
+            ax.plot(*(clip_to(guide, lim) if guide is not None else truth[j]).T, color=LINE, lw=1.1)
+            # The true path is drawn thin and on top, so that each trail shows how far it departs from it.
+            art.append({"future": line(color=INK, lw=1.3, zorder=8),
+                        "trail": {m: line(color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
+                                          zorder=STYLE[m]["z"]) for m in a.modes},
+                        "now": line(color=INK, marker="o", ms=5.5, ls="none", zorder=9),
+                        "pred": {m: line(color=STYLE[m]["color"], ls=STYLE[m]["ls"], lw=STYLE[m]["lw"],
+                                         zorder=STYLE[m]["z"]) for m in a.modes},
+                        "end": {m: line(marker="o", ms=STYLE[m]["ms"], ls="none", color=STYLE[m]["color"],
+                                        zorder=STYLE[m]["z"]) for m in a.modes}})
+        # Current time c is the index of the last true state given to the models.
+        c_min, c_max = max(d["memory"].values()) - 1, T - H - 1
+        panels.append((ax, three, d, art, c_min, c_max))
+    fig.subplots_adjust(left=0.03, right=0.97, top=0.91, bottom=0.1, wspace=0.08, hspace=0.3)
+
+    def set_line(artist, pts, three):
+        pts = np.atleast_2d(pts)
+        artist.set_data(pts[:, 0], pts[:, 1])
+        if three:
+            artist.set_3d_properties(pts[:, 2])
+
+    def lerp(seq, i, w):
+        """Point a fraction w of the way from seq[i] to seq[i + 1]."""
+        return seq[i] if w == 0 else (1 - w) * seq[i] + w * seq[i + 1]
+
+    def draw(frac):
+        for ax, three, d, art, c_min, c_max in panels:
+            # The current time moves continuously. Between two samples, every drawn state is interpolated
+            # linearly, so that systems with few samples per trajectory move as smoothly as the others.
+            t = c_min + frac * (c_max - c_min)
+            c = min(int(t), c_max)
+            w = t - c
+            for j, aj in enumerate(art):
+                truth = d["truth"][j]
+                now = lerp(truth, c, w)
+                set_line(aj["future"], np.vstack([truth[:c + H + 1], lerp(truth, c + H, w)]), three)
+                set_line(aj["now"], now, three)
+                for m in aj["pred"]:
+                    # A model with memory k predicts from the true states c-k+1..c: row c-k+1 of the forecast.
+                    r = c - d["memory"][m] + 1
+                    p = lerp(d["pred"][m][j], r, w)
+                    # Earlier predictions at the full horizon, ending at the current one.
+                    set_line(aj["trail"][m], np.vstack([d["pred"][m][j, :r + 1, -1], p[-1]]), three)
+                    set_line(aj["pred"][m], np.vstack([now, p]), three)
+                    set_line(aj["end"][m], p[-1], three)
+            if three:
+                ax.view_init(elev=22, azim=-60 + 40 * frac)
+        fig.canvas.draw()
+        return np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+
+    if a.poster:
+        draw(0.4)
+        fig.savefig(a.poster, dpi=dpi, facecolor=BG)
+        print("saved", a.poster)
+
+    import imageio.v2 as imageio
+    n = int(a.seconds * a.fps)
+    with imageio.get_writer(a.out, fps=a.fps, codec="libx264", quality=8, pixelformat="yuv420p",
+                            macro_block_size=8, ffmpeg_params=["-movflags", "+faststart"]) as w:
+        for f in range(n):
+            w.append_data(draw(f / (n - 1)))
+    print("saved", a.out)
+
+
+if __name__ == "__main__":
+    torch.set_grad_enabled(False)
+    main()
