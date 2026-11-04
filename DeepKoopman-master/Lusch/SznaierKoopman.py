@@ -18,9 +18,9 @@ import pstats
 
 def load_koopman(path=None):
     if path is None:
-        path = '../sznaier/koopman_out.mat'
+        path = '../data/koopmans/DiscreteSpectrumExample_observables.mat'
     data = loadmat(path)
-    Koop = data['pK']
+    Koop = data['pK'] if 'pK' in data else data['koop']  # older exports stored pK, the SDP results store koop
     # print(Koop.shape)
     Koop = torch.tensor(np.array(Koop), dtype=torch.float32)
     # print(Koop)
@@ -561,7 +561,7 @@ if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
 
     # # run cprofile
-    # cProfile.run('run("DiscreteSpectrumExample", ["train1_x", "val_x"], "test", 200, 64, 1e-3, 400, 7, "../sznaier/FluidFlowBox_observables.mat", 0.1, 0.3, 0.6)')
+    # cProfile.run('run("DiscreteSpectrumExample", ["train1_x", "val_x"], "test", 200, 64, 1e-3, 400, 7, "../data/koopmans/DiscreteSpectrumExample_observables.mat", 0.1, 0.3, 0.6)')
 
     wandb.init(project="KoopmanGrowth", config={"learning_rate": 1e-3, 
                                                                      "batch_size": 64, 
@@ -580,14 +580,14 @@ if __name__ == "__main__":
     learning_rate = 1e-3
     traj_len = 400
     k = 7
-    koopman_path = "../sznaier/FluidFlowBox_observables.mat"
+    koopman_path = "../data/koopmans/DiscreteSpectrumExample_observables.mat"
     l1 = 0.1
     l2 = 0.3
     l3 = 0.6
 
     run(exp_name, exp_ver, wandb_name, num_epochs, batch_size, learning_rate, traj_len, k, koopman_path, l1, l2, l3)
 
-    # cProfile.run('run("DiscreteSpectrumExample", ["train1_x", "val_x"], "test", 200, 64, 1e-3, 400, 7, "../sznaier/FluidFlowBox_observables.mat", 0.1, 0.3, 0.6)', 'profile.prof')
+    # cProfile.run('run("DiscreteSpectrumExample", ["train1_x", "val_x"], "test", 200, 64, 1e-3, 400, 7, "../data/koopmans/DiscreteSpectrumExample_observables.mat", 0.1, 0.3, 0.6)', 'profile.prof')
 
     # p = pstats.Stats('profile.prof')
     # p.strip_dirs().sort_stats('cumulative').print_stats()
